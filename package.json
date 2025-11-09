@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "start": "node --import tsx ./src/app.ts",
+    "start": "node --import tsx ./src/server",
     "typecheck": "tsc --noEmit"
   },
   "author": "",
