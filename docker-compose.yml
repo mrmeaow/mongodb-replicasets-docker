@@ -1,0 +1,180 @@
+version: "3.8"
+
+x-common-env: &common-env
+  MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+  MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS:-pa55w0rd}
+  MONGO_REPLICA_SET_NAME: ${MONGO_REPLICA_SET_NAME:-rs0}
+
+services:
+  # Helper service to generate keyfile with correct permissions
+  keyfile-generator:
+    image: mongo:7.0.0
+    container_name: keyfile_generator
+    volumes:
+      - mongo-keyfile:/keyfile
+    command: >
+      bash -c "
+        if [ ! -f /keyfile/keyfile.key ]; then
+          echo '🔑 Generating keyfile...'
+          openssl rand -base64 756 > /keyfile/keyfile.key
+          chmod 400 /keyfile/keyfile.key
+          chown 999:999 /keyfile/keyfile.key
+          echo '✅ Keyfile created successfully'
+        else
+          echo '✅ Keyfile already exists'
+        fi
+      "
+
+  mongo_clstr0:
+    image: mongo:7.0.0
+    container_name: mongodb_clstr
+    depends_on:
+      keyfile-generator:
+        condition: service_completed_successfully
+    ports:
+      - "27017:27017"
+    volumes:
+      - ~/.containers/mongors/data0:/data/db
+      - ~/.containers/mongors/config0:/data/configdb
+      - mongo-keyfile:/keyfile:ro
+    environment:
+      <<: *common-env
+    command:
+      [
+        "mongod",
+        "--replSet",
+        "${MONGO_REPLICA_SET_NAME:-rs0}",
+        "--bind_ip_all",
+        "--keyFile",
+        "/keyfile/keyfile.key",
+      ]
+    networks:
+      - mongo_clstr_net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  mongo_clstr1:
+    image: mongo:7.0.0
+    container_name: mongodb_clstr_r0
+    depends_on:
+      keyfile-generator:
+        condition: service_completed_successfully
+    ports:
+      - "27018:27017"
+    volumes:
+      - ~/.containers/mongors/data1:/data/db
+      - ~/.containers/mongors/config1:/data/configdb
+      - mongo-keyfile:/keyfile:ro
+    environment:
+      <<: *common-env
+    command:
+      [
+        "mongod",
+        "--replSet",
+        "${MONGO_REPLICA_SET_NAME:-rs0}",
+        "--bind_ip_all",
+        "--keyFile",
+        "/keyfile/keyfile.key",
+      ]
+    networks:
+      - mongo_clstr_net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  mongo_clstr2:
+    image: mongo:7.0.0
+    container_name: mongodb_clstr_r1
+    depends_on:
+      keyfile-generator:
+        condition: service_completed_successfully
+    ports:
+      - "27019:27017"
+    volumes:
+      - ~/.containers/mongors/data2:/data/db
+      - ~/.containers/mongors/config2:/data/configdb
+      - mongo-keyfile:/keyfile:ro
+    environment:
+      <<: *common-env
+    command:
+      [
+        "mongod",
+        "--replSet",
+        "${MONGO_REPLICA_SET_NAME:-rs0}",
+        "--bind_ip_all",
+        "--keyFile",
+        "/keyfile/keyfile.key",
+      ]
+    networks:
+      - mongo_clstr_net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  mongo_clstr_init:
+    image: mongo:7.0.0
+    container_name: mongodb_clstr_init
+    depends_on:
+      mongo_clstr0:
+        condition: service_healthy
+      mongo_clstr1:
+        condition: service_healthy
+      mongo_clstr2:
+        condition: service_healthy
+    networks:
+      - mongo_clstr_net
+    volumes:
+      - ./scripts/init-replica.js:/init-replica.js:ro
+    environment:
+      <<: *common-env
+    entrypoint: >
+      bash -c "
+        echo '⏳ All nodes are healthy, initializing replica set...' &&
+        mongosh --host mongo_clstr0:27017 --file /init-replica.js &&
+        echo '✅ Replica Set initialized successfully.'
+      "
+    restart: "no"
+
+  # 🌐 Mongo Express - Web UI
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mongodb_clstr_webui
+    depends_on:
+      mongo_clstr0:
+        condition: service_healthy
+    ports:
+      - "8091:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_ROOT_USER:-root}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_ROOT_PASS:-pa55w0rd}
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASS:-pa55w0rd}@mongo_clstr0:27017,mongo_clstr1:27017,mongo_clstr2:27017/?replicaSet=${MONGO_REPLICA_SET_NAME:-rs0}
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: pa55w0rd
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+    networks:
+      - mongo_clstr_net
+    restart: unless-stopped
+
+networks:
+  mongo_clstr_net:
+    driver: bridge
+
+volumes:
+  mongo-keyfile:
+    driver: local
